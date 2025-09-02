@@ -1,3 +1,4 @@
+![Screenshot 1](smartlead workflows.png)
 # AI-Powered Lead Nurturing & Qualification
 
 Automates email reply handling from Smartlead campaigns. Uses AI to classify intent and trigger automated actions.
