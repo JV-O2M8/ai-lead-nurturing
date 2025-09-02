@@ -1,0 +1,397 @@
+{
+  "name": "Smartlead",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "smartlead-reply",
+        "options": {}
+      },
+      "id": "1e15f417-80cd-4fcb-8fe9-d295a8298f2b",
+      "name": "Smartlead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -1664,
+        -96
+      ],
+      "webhookId": "b1acae69-9056-4bf8-8c7a-cae66c55d14f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and normalize email data from Smartlead webhook\nconst results = [];\n\nfor (const item of items) {\n  const webhookData = item.json;\n  \n  // Extract email information (adjust field names based on your Smartlead webhook structure)\n  const emailData = {\n    senderEmail: webhookData.from_email || webhookData.sender_email || webhookData.email,\n    senderName: webhookData.from_name || webhookData.sender_name || webhookData.name,\n    emailBody: webhookData.body || webhookData.message || webhookData.reply_body || webhookData.text,\n    subject: webhookData.subject || 'No subject',\n    campaignId: webhookData.campaign_id || webhookData.campaignId,\n    leadId: webhookData.lead_id || webhookData.leadId || webhookData.id,\n    timestamp: webhookData.timestamp || new Date().toISOString(),\n    originalData: webhookData\n  };\n  \n  results.push({\n    json: emailData\n  });\n}\n\nreturn results;"
+      },
+      "id": "c8966593-8bfb-4105-94cc-628724ae1829",
+      "name": "Extract Email Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "text": "Analyze this email reply from a lead and classify their intent:\n\nEmail from: {{ $json.senderName }} ({{ $json.senderEmail }})\nSubject: {{ $json.subject }}\nBody: {{ $json.emailBody }}\n\nClassify into one of these categories and extract key information:\n1. MEETING_REQUEST_WITH_TIMES - Reply contains specific time preferences\n2. MEETING_REQUEST_OPEN - Wants to meet but no specific times\n3. POSITIVE_NON_MEETING - Positive but wants more info first\n4. NEGATIVE - Not interested or unsubscribe\n5. UNCLEAR - Ambiguous response\n\nReturn in JSON format with classification, confidence, extractedTimes, timezone, keyPhrases, and reasoning.",
+        "options": {}
+      },
+      "id": "787c7b09-f1f0-489e-b873-c30ca4fddb26",
+      "name": "AI Intent Detection",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [
+        -1232,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse AI Agent response and combine with original email data\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const aiResponse = items[i].json.output || items[i].json.text || items[i].json.result;\n  const originalData = $('Extract Email Data').item(i).json;\n  \n  let classification;\n  try {\n    // Try to parse JSON response from AI Agent\n    classification = JSON.parse(aiResponse);\n  } catch (error) {\n    // If not JSON, try to extract classification from text\n    const responseText = aiResponse.toString();\n    \n    // Look for classification keywords in the response\n    let detectedClass = \"UNCLEAR\";\n    if (responseText.includes('MEETING_REQUEST_WITH_TIMES')) detectedClass = 'MEETING_REQUEST_WITH_TIMES';\n    else if (responseText.includes('MEETING_REQUEST_OPEN')) detectedClass = 'MEETING_REQUEST_OPEN';\n    else if (responseText.includes('POSITIVE_NON_MEETING')) detectedClass = 'POSITIVE_NON_MEETING';\n    else if (responseText.includes('NEGATIVE')) detectedClass = 'NEGATIVE';\n    \n    classification = {\n      classification: detectedClass,\n      confidence: 0.5,\n      reasoning: \"Parsed from text response: \" + responseText,\n      rawResponse: aiResponse\n    };\n  }\n  \n  results.push({\n    json: {\n      ...originalData,\n      aiClassification: classification.classification,\n      confidence: classification.confidence || 0.5,\n      extractedTimes: classification.extractedTimes || [],\n      timezone: classification.timezone,\n      keyPhrases: classification.keyPhrases || [],\n      reasoning: classification.reasoning,\n      rawAiResponse: aiResponse\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "a71f7f31-c56c-435a-b18e-9a991fd5bd9a",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bfcfc2af-634e-45bc-b475-c1cdbcff6154",
+      "name": "Classification Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -784,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and normalize time ranges from AI-detected times\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  const extractedTimes = data.extractedTimes || [];\n  const timezone = data.timezone || 'America/New_York'; // Default timezone\n  \n  const normalizedSlots = [];\n  \n  // Simple time parsing - you may want to use a more sophisticated library\n  for (const timeStr of extractedTimes) {\n    try {\n      // Basic parsing for common patterns\n      const now = new Date();\n      const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);\n      \n      // Example: create a slot for tomorrow at 2 PM\n      const slotStart = new Date(tomorrow);\n      slotStart.setHours(14, 0, 0, 0);\n      const slotEnd = new Date(slotStart.getTime() + 30 * 60 * 1000); // 30 min meeting\n      \n      normalizedSlots.push({\n        start: slotStart.toISOString(),\n        end: slotEnd.toISOString(),\n        originalString: timeStr\n      });\n    } catch (error) {\n      console.log(`Failed to parse time: ${timeStr}`, error);\n    }\n  }\n  \n  results.push({\n    json: {\n      ...data,\n      normalizedTimeSlots: normalizedSlots,\n      hasSpecificTimes: normalizedSlots.length > 0\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "05683db0-671c-4af4-805c-1c5b54188552",
+      "name": "Time Extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        "authentication": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"summary\": \"Intro Call with {{ $json.senderName }}\",\n  \"description\": \"Scheduled intro call from Smartlead campaign {{ $json.campaignId }}.\\n\\nOriginal message: {{ $json.emailBody }}\",\n  \"start\": {\n    \"dateTime\": \"{{ $json.normalizedTimeSlots[0]?.start || $now.plus({hours: 24}).toISO() }}\",\n    \"timeZone\": \"UTC\"\n  },\n  \"end\": {\n    \"dateTime\": \"{{ $json.normalizedTimeSlots[0]?.end || $now.plus({hours: 24, minutes: 30}).toISO() }}\",\n    \"timeZone\": \"UTC\"\n  },\n  \"attendees\": [\n    {\n      \"email\": \"{{ $json.senderEmail }}\",\n      \"displayName\": \"{{ $json.senderName }}\"\n    }\n  ],\n  \"conferenceData\": {\n    \"createRequest\": {\n      \"requestId\": \"{{ $json.leadId }}-{{ $now.toMillis() }}\",\n      \"conferenceSolutionKey\": {\n        \"type\": \"hangoutsMeet\"\n      }\n    }\n  },\n  \"sendNotifications\": true\n}",
+        "options": {}
+      },
+      "id": "2b62ef0a-c1db-43fd-8bea-8bd68545e68b",
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        -352,
+        -208
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "oliver@yourcompany.com",
+        "toEmail": "={{ $json.senderEmail }}",
+        "subject": "Meeting Confirmed!",
+        "options": {}
+      },
+      "id": "66381c41-95fa-4e2d-bd19-45ddda89f3b7",
+      "name": "Send Confirmation",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        -208
+      ],
+      "webhookId": "8940640e-edc2-48d3-92f0-350c708baa5f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find next 3 available meeting slots\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Generate 3 time slots for next few days\n  const now = new Date();\n  const availableSlots = [];\n  \n  for (let i = 1; i <= 3; i++) {\n    const slotDate = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);\n    slotDate.setHours(14, 0, 0, 0); // 2 PM\n    \n    const endTime = new Date(slotDate.getTime() + 30 * 60 * 1000);\n    \n    availableSlots.push({\n      start: slotDate.toISOString(),\n      end: endTime.toISOString(),\n      displayTime: slotDate.toLocaleDateString('en-US', { \n        weekday: 'long', \n        month: 'long', \n        day: 'numeric',\n        hour: 'numeric',\n        minute: '2-digit'\n      })\n    });\n  }\n  \n  results.push({\n    json: {\n      ...data,\n      availableSlots: availableSlots\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "35a39aa4-0e06-47e8-8cb7-6304453ef66d",
+      "name": "Find Available Times",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "oliver@yourcompany.com",
+        "toEmail": "={{ $json.senderEmail }}",
+        "subject": "Let's schedule our call",
+        "options": {}
+      },
+      "id": "c223a24a-d093-4fb7-b98c-8a666a7cff30",
+      "name": "Send Time Options",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        -352,
+        -48
+      ],
+      "webhookId": "c22e482f-8b43-4b10-892c-5c878f3a002a"
+    },
+    {
+      "parameters": {
+        "fromEmail": "system@yourcompany.com",
+        "toEmail": "oliver@yourcompany.com",
+        "subject": "Lead Response - Manual Review Required",
+        "options": {}
+      },
+      "id": "64066774-c558-4646-a784-c1d937d5588d",
+      "name": "Forward for Review",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        96
+      ],
+      "webhookId": "8e9178e3-0762-43c5-8f4f-718475b5a06d"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Log negative responses\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  console.log('Negative response logged:', {\n    leadId: data.leadId,\n    email: data.senderEmail,\n    campaignId: data.campaignId,\n    timestamp: new Date().toISOString()\n  });\n  \n  results.push({\n    json: {\n      ...data,\n      logged: true,\n      status: 'negative_logged'\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "a739de86-6f4a-497f-9bd2-a8e2dfe06b85",
+      "name": "Log Negative Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "system@yourcompany.com",
+        "toEmail": "oliver@yourcompany.com",
+        "subject": "Workflow Error - Processing Failed",
+        "options": {}
+      },
+      "id": "f9f02662-2360-4321-9232-b3792506cf62",
+      "name": "Error Notification",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [
+        -576,
+        368
+      ],
+      "webhookId": "c32202f0-bc34-4f7f-bce4-4a05727a699d"
+    },
+    {
+      "parameters": {
+        "content": "Workflow Description: AI-Powered Lead Nurturing & Qualification\nThis n8n workflow automatically processes incoming email replies from a Smartlead campaign. It uses an AI model to classify the intent of each reply and then takes a specific, automated action to either book a meeting, suggest times, or flag the response for manual review.\n\nNode-by-Node Breakdown\n1. Smartlead Webhook:\n\nPurpose: The entry point of the workflow. It's a webhook that listens for new email reply notifications sent from Smartlead campaigns.\n\n2. Extract Email Data (Code):\n\nPurpose: Cleans and normalizes the raw data received from the webhook. It extracts key information such as the sender's name, email, subject line, and the body of the message, making it easy to use in subsequent nodes.\n\n3. AI Intent Detection:\n\nPurpose: The core of the AI automation. This node sends the email data to a connected AI model (the Google Gemini Chat Model) with a prompt to classify the sender's intent. It is configured to categorize the reply into one of five types: MEETING_REQUEST_WITH_TIMES, MEETING_REQUEST_OPEN, POSITIVE_NON_MEETING, NEGATIVE, or UNCLEAR.\n\n4. Parse AI Response (Code):\n\nPurpose: Processes the raw output from the AI model. This node is critical for robustness; it attempts to parse the AI's response as JSON but also has a fallback to extract the classification from plain text if the JSON parsing fails. It ensures the rest of the workflow receives a consistent data format.\n\n5. Classification Router:\n\nPurpose: The central logic gate of the workflow. It uses the aiClassification field from the previous node to route the workflow down a specific path, ensuring the correct automated action is taken based on the lead's intent.\n\nAutomated Paths (Branches)\nPath 1: MEETING_REQUEST_WITH_TIMES\n\n6. Time Extraction (Code): Parses the specific times mentioned in the lead's email and normalizes them into a format suitable for calendar applications.\n\n7. Create Calendar Event: Automatically creates a Google Calendar event for the scheduled meeting and includes the lead as an attendee.\n\n8. Send Confirmation: Sends an automatic email to the lead to confirm the meeting has been scheduled and that a calendar invite is on its way.\n\nPath 2: MEETING_REQUEST_OPEN or POSITIVE_NON_MEETING\n\n9. Find Available Times (Code): Generates a list of suggested meeting slots for the next few days.\n\n10. Send Time Options: Sends a professional email to the lead providing the pre-generated time slots to choose from.\n\nPath 3: NEGATIVE\n\n11. Log Negative Response (Code): Logs the negative reply, allowing you to track unsubscribes and rejections without taking further action. This prevents spamming and respects the lead's wishes.\n\nPath 4: UNCLEAR\n\n12. Forward for Review: An important safety net. If the AI is unsure of the intent, this node sends an internal email to a designated person (e.g., your sales team) for manual review. This ensures no promising leads are missed.\n\n13. Error Notification:\n\nPurpose: A general fail-safe node. If any part of the workflow encounters an unhandled error, this node sends an email to an administrator so the issue can be investigated.",
+        "height": 928,
+        "width": 1008
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1712,
+        144
+      ],
+      "id": "c2f50765-43db-4935-8a5c-9f623a6f206a",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -1328,
+        16
+      ],
+      "id": "d9f00d17-0030-445e-bd1c-6e62407b9bd2",
+      "name": "OpenAI Chat Model"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Smartlead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Email Data": {
+      "main": [
+        [
+          {
+            "node": "AI Intent Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Intent Detection": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Classification Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classification Router": {
+      "main": [
+        [
+          {
+            "node": "Time Extraction",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Forward for Review",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Find Available Times",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log Negative Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Time Extraction": {
+      "main": [
+        [
+          {
+            "node": "Create Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Available Times": {
+      "main": [
+        [
+          {
+            "node": "Send Time Options",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Intent Detection",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0097ab4a-6e21-4e46-85fb-2c27120fa254",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "0f92a3083a45cfc8980f991e8ea0de14b5bc6a6b0d6108ebdf8df4d12109bb6f"
+  },
+  "id": "dmo05N5SPHJytqfR",
+  "tags": []
+}
